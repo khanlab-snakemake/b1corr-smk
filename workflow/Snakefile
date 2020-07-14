@@ -1,0 +1,212 @@
+from os.path import join
+from glob import glob
+import pandas as pd
+
+configfile: 'config.yaml'
+
+# Load participants.tsv file
+df = pd.read_table(config['participants_tsv'])
+subjects = df.participant_id.to_list() 
+
+# Wildcards
+rois = config['rois'].keys()
+iters = range(config['nr_iterations'])
+tps = config['timepoints']
+modalities = config['modalities']
+hemis = config['hemispheres']
+
+wildcard_constraints:
+    subject = "[-a-zA-Z0-9]+",
+    iter = "[0-4]+"
+
+# Final output
+
+rule all:
+    input:
+        #expand('output/freesurfer_spm/{subject}.done', subject=subjects),
+        #expand('output/freesurfer_data/fs-seg-metrics_data.pkl'),
+        #expand('output/surfmorph/labels/{subject}_{t}/anat/{subject}_{t}_{roi}.nii.gz', subject=subjects, t=tps, roi=rois),
+        #expand('output/surfmorph/displacement/{roi}_participant1_iter2.done', roi=rois, iter=iters)
+
+
+# Function to setup default input files
+
+def collect_input(wildcards):
+    site = '{wildcards.subject}'.format(wildcards=wildcards).split('-',1)[0]
+    subject = '{wildcards.subject}'.format(wildcards=wildcards).split('-',1)[1]
+    bids = config[site]['bids']
+    deriv =  config[site]['mp2rage_correction']
+
+    return { 'uni_orig': join(bids,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['uni_orig'])),
+             'uni_corr': join(deriv,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['uni_corr'])),
+             'uni_den': join(bids,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['uni_den'])),
+             't1_orig': join(bids,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['t1_orig'])),
+             't1_corr': join(deriv,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['t1_corr'])),
+             'inv1': join(bids,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['inv1'])), 
+             'inv2': join(bids,'sub-{s}/anat/sub-{s}{f}'.format(s=subject,f=config[site]['inv2'])),
+             'b1': join(deriv,'sub-{s}/{sf}/sub-{s}{f}'.format(s=subject,f=config[site]['b1'],sf='fmap' if site=='MSTRCHT' else 'anat'))}
+
+
+# Awesome MP2RAGE skull removal procedure proposed by Sriranga Kashyap
+
+rule skull_stripping_spm:
+    input: unpack(collect_input)
+    output: 'output/skull_stripping_spm/{subject}/mask_final.nii.gz',
+    params:
+        out_dir = directory('output/skull_stripping_spm/{subject}'),
+        script = 'scripts/matlab/run_cat12.m'
+    group: 'preprocessing'
+    threads: 8
+    resources:
+        mem_mb = 32000
+    log: 
+    shell:
+        "bash scripts/bash/skullstrip_spm.sh {params.script} {input.uni_den} {params.out_dir}"   
+
+
+# Extract brain and run FreeSurfer longitudinal pipeline
+
+rule freesurfer_longitudinal:
+    input:
+        unpack(collect_input),
+        mask = rules.skull_stripping_spm.output
+    output: 'output/freesurfer_spm/{subject}.done'
+    params:
+        subjects_dir = config['subjects_dir'],
+        expert = 'scripts/expert.opts'
+    group: 'freesurfer'
+    threads: 16
+    resources:
+        mem_mb = 32000,
+        time = 1440
+    shell:
+        "export OMP_NUM_THREADS={threads} && "
+        "bash scripts/bash/fslong.sh {wildcards.subject} {input.uni_orig} {input.uni_corr} "
+        "{input.mask} {params.subjects_dir} {output} {params.expert}"
+
+
+# Map input data onto FreeSurfer native subject and fsaverage meshes. Convert to GIFTI format
+
+rule surface_mapping:
+    input:
+        unpack(collect_input)
+    output: 
+        expand('output/surface_mapping/{{subject}}/{h}.{{subject}}_{m}_{t}.fsaverage.shape.gii', h=hemis, m=modalities, t=tps),
+        expand('output/surface_mapping/{{subject}}/{h}.{{subject}}_b1.fsaverage.shape.gii', h=hemis)
+    params:
+        subjects_dir = config['subjects_dir'],
+        out_dir = directory('output/surface_mapping/{subject}')
+    shell:
+        "bash scripts/bash/fsmapping.sh {wildcards.subject} {input.uni_orig} {input.uni_corr} {input.t1_orig} {input.t1_corr} {input.b1} "
+        "{params.out_dir} {params.subjects_dir}"
+
+
+# Collect all FreeSurfer data: surface- and aseg-based datasets per subject
+
+rule collect_freesurfer_data:
+    input:
+        surface_maps = rules.surface_mapping.output,
+        aseg = expand(join(config['subjects_dir'],'{{subject}}_{t}.long.{{subject}}/mri/aseg.mgz'), t=tps)
+    output:
+        surface_data = 'output/freesurfer_data/{subject}/{subject}_fs-surf_data.pkl',
+        aseg_data = 'output/freesurfer_data/{subject}/{subject}_fs-seg_data.pkl'
+    params:
+        subjects_dir = config['subjects_dir'],
+        timepoints = tps,
+        modalities = modalities,
+        hemispheres = hemis,
+        structures = config['rois']
+    script: 'scripts/python/collect_freesurfer_data.py'
+
+
+# Calculate and collect all segmentation metrics per subject: dice, jaccard and hausdorff
+
+rule collect_overlap_scores:
+    input: expand(join(config['subjects_dir'],'{{subject}}_{t}.long.{{subject}}/mri/aseg.mgz'), t=tps)
+    output: 'output/freesurfer_data/{subject}/{subject}_fs-seg-metrics_data.pkl'
+    params:
+        subjects_dir = config['subjects_dir'],
+        timepoints = tps,
+        hemispheres = hemis,
+        structures = config['rois']
+    script: 'scripts/python/collect_overlap_scores.py'
+    
+
+# Combine subjects: groups- and modality-based datasets
+
+rule combine_freesurfer_data:
+    input: 
+        surface_data = expand('output/freesurfer_data/{subject}/{subject}_fs-surf_data.pkl', subject=subjects),
+        aseg_data = expand('output/freesurfer_data/{subject}/{subject}_fs-seg_data.pkl', subject=subjects),
+        seg_data = expand('output/freesurfer_data/{subject}/{subject}_fs-seg-metrics_data.pkl', subject=subjects)
+    output:
+        surface_data = expand('output/freesurfer_data/{s}/{m}_{t}_{h}.pkl', s=['Maastricht','London'], h=hemis, t=tps, m=modalities),
+        aseg_data = 'output/freesurfer_data/fs-seg_data.pkl',
+        seg_data = 'output/freesurfer_data/fs-seg-metrics_data.pkl'
+    script: 'scripts/python/combine_freesurfer_data.py'
+
+
+# Prepare data for surface-based morphometry        
+        
+rule prep_surfmorph:
+    input:    
+        t1w = join(config['subjects_dir'],'{subject}_corr.long.{subject}/mri/orig.mgz'),
+        seg = join(config['subjects_dir'],'{subject}_{tp}.long.{subject}/mri/aseg.mgz')
+    output:
+        t1w = 'output/surfmorph/labels/{subject}_{tp}/anat/{subject}_{tp}_brain_T1w.nii.gz',
+        seg = expand('output/surfmorph/labels/{{subject}}_{{tp}}/anat/{{subject}}_{{tp}}_{roi}.nii.gz', roi=rois)
+    params:
+        structures = config['rois']
+    group: 'presurfmorph'
+    script: "scripts/python/prep_surfmorph.py"
+
+
+# Generate participants file
+
+rule gen_participants_tsv:
+    input: 'output/surfmorph/labels'
+    output: 'output/surfmorph/labels/participants.tsv'
+    group: 'presurfmorph'
+    shell:
+        "echo participant_id > {output} && "
+        "for d in `ls -d output/surfmorph/labels/*/` ; do "
+            "echo `basename $d` >> output/surfmorph/labels/participants.tsv ; "
+        "done"
+
+
+# Run the actual surface morphometry pipeline: first group level, then participant level. Repeat three times.
+
+rule run_surfmorph_group:
+    input: lambda wildcards: rules.gen_participants_tsv.output if int(wildcards.iter) == 0 else 'output/surfmorph/displacement/{{roi}}_participant1_iter{iteration}.done'.format(iteration=int(wildcards.iter)-1, roi=wildcards.roi)
+    output: touch('output/surfmorph/displacement/{roi}_group1_iter{iter}.done')
+    params:
+        in_dir = directory('output/surfmorph/labels'), 
+        out_dir = directory('output/surfmorph/displacement'),
+        run_script = config['surfmorph_script']
+    #group: 'surfmorph_group'
+    singularity: config['surfmorph']
+    threads: 8
+    resources:
+        mem_mb = 32000,
+        time = 120        
+    shell: 
+        "bash {params.run_script} {params.in_dir} {params.out_dir} group1 --in_seg_dir {params.in_dir} "
+        "--matching_seg {wildcards.roi} --seg_name {wildcards.roi} --matching_T1w brain --skip_bet"
+
+rule run_surfmorph_participant:
+    input: rules.run_surfmorph_group.output
+    output: touch('output/surfmorph/displacement/{roi}_participant1_iter{iter}.done')
+    params:
+        in_dir = directory('output/surfmorph/labels'), 
+        out_dir = directory('output/surfmorph/displacement'),
+        run_script = config['surfmorph_script']
+    #group: 'surfmorph'
+    singularity: config['surfmorph']
+    threads: 8
+    resources:
+        mem_mb = 32000,
+        time = 1440       
+    shell: 
+        "bash {params.run_script} {params.in_dir} {params.out_dir} participant1 --in_seg_dir {params.in_dir} "
+        "--matching_seg {wildcards.roi} --seg_name {wildcards.roi} --matching_T1w brain --skip_bet"        
+

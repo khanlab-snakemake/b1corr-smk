@@ -2,12 +2,12 @@ clc;
 clear all;
 
 %% MP2RAGE parameters for simulations
-MP2RAGE.London.B0=7;           % in Tesla
-MP2RAGE.London.TR=6;           % MP2RAGE TR in seconds
-MP2RAGE.London.TRFLASH=6.7e-3; % TR of the GRE readout
-MP2RAGE.London.TIs=[800e-3 2700e-3];% inversion times - time between middle of refocusing pulse and excitatoin of the k-space center encoding
-MP2RAGE.London.NZslices=[56 112];% Slices Per Slab * [PartialFourierInSlice-0.5  0.5]
-MP2RAGE.London.FlipDegrees=[4 5];% Flip angle of the two readouts in degrees
+MP2RAGE.London.B0=7;                 % in Tesla
+MP2RAGE.London.TR=6;                 % MP2RAGE TR in seconds
+MP2RAGE.London.TRFLASH=6.7e-3;       % TR of the GRE readout
+MP2RAGE.London.TIs=[800e-3 2700e-3]; % inversion times - time between middle of refocusing pulse and excitatoin of the k-space center encoding
+MP2RAGE.London.NZslices=[56 112];    % Slices Per Slab * [PartialFourierInSlice-0.5  0.5]
+MP2RAGE.London.FlipDegrees=[4 5];    % Flip angle of the two readouts in degrees
 MP2RAGE.London.PartialFourierInSlice=0.75
 
 MP2RAGE.Maastricht.B0=7;
@@ -18,13 +18,13 @@ MP2RAGE.Maastricht.NZslices=[120 120];
 MP2RAGE.Maastricht.FlipDegrees=[5 3];
 MP2RAGE.Maastricht.PartialFourierInSlice=1
 
-MP2RAGE.ProtocolA.B0=7;
-MP2RAGE.ProtocolA.TR=6;
-MP2RAGE.ProtocolA.TRFLASH=6.9e-3;
-MP2RAGE.ProtocolA.TIs=[800e-3 2700e-3];
-MP2RAGE.ProtocolA.NZslices=[56 112];
-MP2RAGE.ProtocolA.FlipDegrees=[4 5];
-MP2RAGE.ProtocolA.PartialFourierInSlice=0.75
+MP2RAGE.Maastricht-2.B0=7;
+MP2RAGE.Maastricht-2.TR=6;
+MP2RAGE.Maastricht-2.TRFLASH=6.9e-3;
+MP2RAGE.Maastricht-2.TIs=[800e-3 2700e-3];
+MP2RAGE.Maastricht-2.NZslices=[56 112];
+MP2RAGE.Maastricht-2.FlipDegrees=[4 5];
+MP2RAGE.Maastricht-2.PartialFourierInSlice=0.75
 
 %% Define signal and noise functions as in the original MP2RAGE paper
 % (https://doi.org/10.1016/j.neuroimage.2009.10.002)
@@ -78,7 +78,7 @@ for site={'London','Maastricht','Maastricht-2'}
     end
 end
 
-save('/home/ROBARTS/rhaast/graham/scratch/B1corr/output/simulations/data_PFcorrected.mat','MP2RAGEamps','T1vectors','CNRs_PFcorr','T1range','B1range','FlipAngles');
+save('../../output/simulations/data_PFcorrected.mat','MP2RAGEamps','T1vectors','CNRs_PFcorr','T1range','B1range','FlipAngles');
 
 %% Plot B1+ sensitivity
 k=0;
